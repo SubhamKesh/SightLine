@@ -7,19 +7,44 @@ class SpeechService {
   final SpeechToText _speech =
       SpeechToText();
 
+  bool _isListening = false;
+
+  bool _isInitialized = false;
+
+  Function(String)? _onResult;
+
   Future<void> init() async {
     await _tts.setLanguage("en-US");
 
-    await _tts.setSpeechRate(0.5);
+    await _tts.setSpeechRate(0.45);
 
     await _tts.setPitch(1.0);
 
-    await _speech.initialize();
+    await _tts.awaitSpeakCompletion(
+      true,
+    );
+
+    _isInitialized =
+        await _speech.initialize();
+
+    _tts.setCompletionHandler(() async {
+      await Future.delayed(
+        const Duration(
+          milliseconds: 300,
+        ),
+      );
+
+      _restartListening();
+    });
   }
 
   Future<void> speak(
     String text,
   ) async {
+    if (text.trim().isEmpty) return;
+
+    await stopListening();
+
     await _tts.stop();
 
     await _tts.speak(text);
@@ -32,27 +57,44 @@ class SpeechService {
   Future<void> listen(
     Function(String) onResult,
   ) async {
-    bool available =
-        await _speech.initialize();
+    _onResult = onResult;
 
-    if (!available) return;
+    await _restartListening();
+  }
 
-    _speech.listen(
-      onResult: (result) {
-        onResult(
-          result.recognizedWords,
-        );
+  Future<void> _restartListening() async {
+    if (!_isInitialized) return;
+
+    if (_isListening) return;
+
+    _isListening = true;
+
+    await _speech.listen(
+      onResult: (result) async {
+        final words =
+            result.recognizedWords
+                .trim();
+
+        print("WORDS: $words");
+
+        if (result.finalResult &&
+            words.isNotEmpty) {
+          _isListening = false;
+
+          await _speech.stop();
+
+          if (_onResult != null) {
+            _onResult!(words);
+          }
+        }
       },
 
-      partialResults: true,
+      partialResults: false,
 
       cancelOnError: false,
 
-      listenMode: ListenMode.confirmation,
-
-      onSoundLevelChange: (
-        level,
-      ) {},
+      listenMode:
+          ListenMode.dictation,
 
       listenFor: const Duration(
         minutes: 30,
@@ -63,19 +105,16 @@ class SpeechService {
       ),
 
       onDevice: false,
-    );
 
-    _speech.statusListener =
-        (status) {
-      if (status == "done" ||
-          status ==
-              "notListening") {
-        listen(onResult);
-      }
-    };
+      onSoundLevelChange: (level) {
+        print("MIC LEVEL: $level");
+      },
+    );
   }
 
   Future<void> stopListening() async {
+    _isListening = false;
+
     await _speech.stop();
   }
 }

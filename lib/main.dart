@@ -10,7 +10,7 @@ import 'package:vibration/vibration.dart';
 import 'speech_service.dart';
 import 'ai_service.dart';
 
-const String geminiApiKey = 'AIzaSyA_i_9yFsYRSxYYilH3wN1Lugqz74RCAzA';
+const String geminiApiKey = 'AIzaSyBtD7d-eculfJ3q959EZG2xJ0ZcMigUAG0';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -32,7 +32,7 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Vision Assistant',
+      title: 'SightLine',
       theme: ThemeData.dark(),
       home: CameraScreen(cameras: cameras),
     );
@@ -70,12 +70,17 @@ class _CameraScreenState
 
   bool _isAutoMode = true;
 
+  bool _privacyMode = false;
+
   bool _hasMotion = true;
 
   String _geminiResponse =
-      "Initializing vision assistant...";
+      "Initializing SightLine...";
 
   String _lastScene = "";
+
+  DateTime _lastQuestionTime =
+      DateTime.now();
 
   @override
   void initState() {
@@ -105,10 +110,8 @@ class _CameraScreenState
     _startAutomaticAnalysis();
 
     await _speechService.speak(
-      "Vision assistant started.",
+      "SightLine started.",
     );
-
-    await _analyzeCurrentFrame();
   }
 
   Future<void> _initializeCamera() async {
@@ -149,7 +152,7 @@ class _CameraScreenState
             event.y.abs() +
             event.z.abs();
 
-        _hasMotion = movement > 1.0;
+        _hasMotion = movement > 1.2;
       },
     );
   }
@@ -158,9 +161,23 @@ class _CameraScreenState
     _analysisTimer?.cancel();
 
     _analysisTimer = Timer.periodic(
-      const Duration(seconds: 3),
+      const Duration(seconds: 4),
       (timer) async {
-        if (_isAutoMode) {
+        if (!_isAutoMode) return;
+
+        if (_privacyMode) return;
+
+        if (_isProcessing) return;
+
+        final recentlyAsked =
+            DateTime.now()
+                    .difference(
+                      _lastQuestionTime,
+                    )
+                    .inSeconds <
+                6;
+
+        if (!recentlyAsked) {
           await _analyzeCurrentFrame();
         }
       },
@@ -169,53 +186,91 @@ class _CameraScreenState
 
   void _startContinuousListening() {
     _speechService.listen(
-      (words) {
-        _handleVoiceCommand(words);
+      (words) async {
+        await _handleVoiceCommand(
+          words,
+        );
       },
     );
   }
 
-  void _handleVoiceCommand(
+  Future<void> _handleVoiceCommand(
     String command,
   ) async {
-    final cmd = command.toLowerCase();
+    final cmd =
+        command.toLowerCase().trim();
+
+    if (cmd.isEmpty) return;
 
     print("VOICE COMMAND: $cmd");
 
-    if (cmd.contains("what") ||
-        cmd.contains("describe") ||
-        cmd.contains("where")) {
-      await _speechService.stopSpeaking();
-
-      await _analyzeCurrentFrame();
-    }
-
-    if (cmd.contains("stop")) {
-      setState(() {
-        _isAutoMode = false;
-      });
+    if (cmd.contains(
+      "privacy mode on",
+    )) {
+      _privacyMode = true;
 
       await _speechService.speak(
-        "Automatic mode disabled.",
+        "Privacy mode enabled.",
       );
+
+      return;
     }
 
-    if (cmd.contains("start")) {
-      setState(() {
-        _isAutoMode = true;
-      });
+    if (cmd.contains(
+      "privacy mode off",
+    )) {
+      _privacyMode = false;
 
       await _speechService.speak(
-        "Automatic mode enabled.",
+        "Privacy mode disabled.",
       );
+
+      return;
     }
+
+    if (cmd.contains(
+      "stop navigation",
+    )) {
+      _isAutoMode = false;
+
+      await _speechService.speak(
+        "Navigation stopped.",
+      );
+
+      return;
+    }
+
+    if (cmd.contains(
+      "start navigation",
+    )) {
+      _isAutoMode = true;
+
+      await _speechService.speak(
+        "Navigation started.",
+      );
+
+      return;
+    }
+
+    _lastQuestionTime =
+        DateTime.now();
+
+    
+
+    await _analyzeCurrentFrame(
+      customQuestion: cmd,
+    );
   }
 
-  Future<void> _analyzeCurrentFrame() async {
-    final controller = _cameraController;
+  Future<void> _analyzeCurrentFrame({
+    String? customQuestion,
+  }) async {
+    final controller =
+        _cameraController;
 
     if (controller == null ||
-        !controller.value.isInitialized) {
+        !controller
+            .value.isInitialized) {
       return;
     }
 
@@ -225,22 +280,58 @@ class _CameraScreenState
 
     try {
       final XFile picture =
-          await controller.takePicture();
+          await controller
+              .takePicture();
 
       final Uint8List bytes =
-          await picture.readAsBytes();
+          await picture
+              .readAsBytes();
+
+      String prompt = '''
+You are SightLine.
+
+You help blind users understand surroundings and answer questions about what the camera sees.
+
+RULES:
+- Answer the user's question directly.
+- Only warn about REAL immediate danger.
+- Do NOT assume danger unless clearly visible.
+- Keep replies under 2 short sentences.
+- Be precise and natural.
+- Mention direction and distance when useful.
+
+Examples:
+"Your bottle is on the table slightly right."
+"Chair is 2 feet ahead."
+"Move a little left to avoid the wall."
+
+If there is NO danger, do NOT say danger.
+''';
+
+      if (customQuestion != null &&
+          customQuestion
+              .isNotEmpty) {
+        prompt += '''
+
+USER QUESTION:
+$customQuestion
+
+Answer directly.
+''';
+      }
 
       final responseText =
-          await _aiService.analyzeImage(
+          await _aiService
+              .analyzeImage(
         bytes,
+        customPrompt: prompt,
       );
-
-      print(responseText);
 
       if (!mounted) return;
 
       setState(() {
-        _geminiResponse = responseText;
+        _geminiResponse =
+            responseText;
       });
 
       final cleaned =
@@ -253,24 +344,42 @@ class _CameraScreenState
               .trim()
               .toLowerCase();
 
-      final changed =
+      bool changed =
           cleaned != previous;
 
-      if (changed) {
+      bool danger =
+          cleaned.contains(
+                "danger",
+              ) ||
+              cleaned.contains(
+                "warning",
+              ) ||
+              cleaned.contains(
+                "stop",
+              );
+
+      if (customQuestion != null &&
+          customQuestion
+              .isNotEmpty) {
+        changed = true;
+      }
+
+      if (_hasMotion) {
+        changed = true;
+      }
+
+      if (danger || changed) {
         _lastScene = responseText;
 
         await _speechService
             .stopSpeaking();
 
-        if (responseText
-            .toUpperCase()
-            .contains("DANGER")) {
+        if (danger) {
           Vibration.vibrate(
             pattern: [
               500,
               200,
               500,
-              200
             ],
           );
         }
@@ -316,8 +425,18 @@ class _CameraScreenState
     return Scaffold(
       appBar: AppBar(
         title: const Text(
-          "Vision Assistant",
+          "SightLine",
         ),
+        actions: [
+          Icon(
+            _privacyMode
+                ? Icons.lock
+                : Icons.lock_open,
+          ),
+          const SizedBox(
+            width: 12,
+          ),
+        ],
       ),
       body: Column(
         children: [
@@ -364,9 +483,11 @@ class _CameraScreenState
       floatingActionButton:
           FloatingActionButton(
         backgroundColor:
-            _isAutoMode
-                ? Colors.green
-                : Colors.red,
+            _privacyMode
+                ? Colors.orange
+                : _isAutoMode
+                    ? Colors.green
+                    : Colors.red,
         onPressed: () {
           setState(() {
             _isAutoMode =
@@ -374,10 +495,12 @@ class _CameraScreenState
           });
         },
         child: Icon(
-          _isAutoMode
-              ? Icons.visibility
-              : Icons
-                  .visibility_off,
+          _privacyMode
+              ? Icons.lock
+              : _isAutoMode
+                  ? Icons.visibility
+                  : Icons
+                      .visibility_off,
         ),
       ),
     );
