@@ -10,7 +10,7 @@ import 'package:vibration/vibration.dart';
 import 'speech_service.dart';
 import 'ai_service.dart';
 
-const String geminiApiKey = 'AIzaSyBtD7d-eculfJ3q959EZG2xJ0ZcMigUAG0';
+const String geminiApiKey = 'AIzaSyCyZHv-TvIf7MNn28xlRJ5_Wsr9SaogxHw';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
